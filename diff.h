@@ -26,5 +26,9 @@ typedef struct {
 
 diff_t *diff_lcs(diff_file_t *x, diff_file_t *y);
 int diff_files_print(diff_t *d, int (*put)(void *handle, int ch), void *handle, diff_file_t *a, diff_file_t *b);
+char *diff_getdelim(int (*get)(void *handle), void *handle, size_t *returned_size, const int delim);
+void diff_file_free(diff_file_t *f);
+diff_file_t *diff_file_get(int (*get)(void *handle), void *handle);
+void diff_free(diff_t *d);
 
 #endif

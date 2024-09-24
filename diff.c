@@ -1,15 +1,19 @@
 /**
  * TODO:
- *      * Simple optimization of ignoring beginning and end of text
  *      * Turn into library
  *      * Documentation
  *      * Optionally ignore whitespace, case, set delim (binary diff?)
  *      * Return error code; files differ vs error vs no difference
  *      * Fuzzy search, combine with regex engine?
  *      * Print out diff matrix?
+ *      * Print diff numbers / commands
  *      * Assertions on range
  *      * Levenshtein, Damerau-Levenshtein?
+ *      * Unit tests
+ *      * Fuzzing
+ *      * Uses hashes of lines to avoid expensive comparisons?
  * See:
+ *
  * <https://en.wikibooks.org/wiki/Algorithm_Implementation/Strings/Longest_common_subsequence>
  * <http://www.algorithmist.com/index.php/Longest_Common_Subsequence>
  * <https://en.wikipedia.org/wiki/Longest_common_subsequence_problem>
@@ -17,7 +21,6 @@
  *
  * XXX BUGS:
  *      * If one file is empty it will not work, instead it returns null
- *      * unsigned array wrap around
  */
 #include <string.h>
 #include <stdlib.h>
@@ -35,21 +38,6 @@ static int diff_line_equal(diff_line_t *a, diff_line_t *b) {
 		return 0;
 	return !memcmp(a->line, b->line, a->length);
 }
-
-/*
-function LCS(X[1..m], Y[1..n])
-    C = array(0..m, 0..n)
-    for i := 0..m
-       C[i,0] = 0
-    for j := 0..n
-       C[0,j] = 0
-    for i := 1..m
-        for j := 1..n
-            if X[i] = Y[j]
-                C[i,j] := C[i-1,j-1] + 1
-            else
-                C[i,j] := max(C[i,j-1], C[i-1,j])
-    return C*/
 
 diff_t *diff_lcs(diff_file_t *x, diff_file_t *y) {
 	assert(x);
@@ -95,19 +83,6 @@ static int diff_output_line(int (*put)(void *handle, int ch), void *handle, int 
 	return diff_write(put, handle, s, length);
 }
 
-/* function printDiff(C[0..m,0..n], X[1..m], Y[1..n], i, j)
-    if i > 0 and j > 0 and X[i] = Y[j]
-        printDiff(C, X, Y, i-1, j-1)
-        print "  " + X[i]
-    else if j > 0 and (i = 0 or C[i,j-1] ≥ C[i-1,j])
-        printDiff(C, X, Y, i, j-1)
-        print "+ " + Y[j]
-    else if i > 0 and (j = 0 or C[i,j-1] < C[i-1,j])
-        printDiff(C, X, Y, i-1, j)
-        print "- " + X[i]
-    else
-        print "" */
-
 static int diff_print_arrays_internal(diff_t *d, int (*put)(void *handle, int ch), void *handle, diff_line_t x[], diff_line_t y[], size_t i, size_t j) {
 	assert(d);
 	assert(put);
@@ -135,7 +110,7 @@ int diff_files_print(diff_t *d, int (*put)(void *handle, int ch), void *handle, 
 	return diff_print_arrays_internal(d, put, handle, a->lines, b->lines, a->length, b->length);
 }
 
-static void diff_file_free(diff_file_t *f) {
+void diff_file_free(diff_file_t *f) {
 	diff_line_t *lines = f->lines;
 	for (size_t i = 0; i < f->length; i++) {
 		free(lines[i].line);
@@ -148,7 +123,7 @@ static void diff_file_free(diff_file_t *f) {
 	free(f);
 }
 
-static void diff_free(diff_t *d) {
+void diff_free(diff_t *d) {
 	assert(d);
 	free(d->c);
 	d->c = NULL;
@@ -157,7 +132,7 @@ static void diff_free(diff_t *d) {
 	free(d);
 }
 
-static char *diff_getdelim(int (*get)(void *handle), void *handle, size_t *returned_size, const int delim) {
+char *diff_getdelim(int (*get)(void *handle), void *handle, size_t *returned_size, const int delim) {
 	assert(get);
 	char *retbuf = NULL;
 	const size_t start = 128;
@@ -203,14 +178,14 @@ static int diff_putch(void *handle, int ch) {
 	return fputc(ch, (FILE*)handle);
 }
 
-static diff_file_t *diff_file_get(FILE *f) {
-	assert(f);
+diff_file_t *diff_file_get(int (*get)(void *handle), void *handle) {
+	assert(get);
 	diff_file_t *r = calloc(1, sizeof (*r));
 	if (!r) return NULL;
 	char *line = NULL;
 	size_t sz = 0, nl = 1;
 
-	while ((line = diff_getdelim(diff_getch, f, &sz, '\n'))) {
+	while ((line = diff_getdelim(get, handle, &sz, '\n'))) {
 		if (!(r->lines = realloc(r->lines, (nl + 1) * sizeof (r->lines[0])))) {
 			diff_file_free(r);
 			return NULL;
@@ -243,16 +218,18 @@ static FILE *diff_fopen_or_fail(const char *name, const char *mode) {
 
 int main(int argc, char **argv) {
 	diff_t *d = NULL;
-	int r = 0;
+	int r = 0, difference = 0;
 
-	if (argc != 3)
-		return fprintf(stderr, "Usage: %s file file\n", argv[0]), 1;
+	if (argc != 3) {
+		(void)fprintf(stderr, "Usage: %s file file\n", argv[0]);
+		return -1;
+	}
 
 	FILE *fa = diff_fopen_or_fail(argv[1], "rb");
 	FILE *fb = diff_fopen_or_fail(argv[2], "rb");
 
-	diff_file_t *a = diff_file_get(fa);
-	diff_file_t *b = diff_file_get(fb);
+	diff_file_t *a = diff_file_get(diff_getch, fa);
+	diff_file_t *b = diff_file_get(diff_getch, fb);
 
 	if (fclose(fa) < 0) r = -1;
 	if (fclose(fb) < 0) r = -1;
@@ -268,6 +245,11 @@ int main(int argc, char **argv) {
 		if (!diff_line_equal(&a->lines[a->length - i - 1], &b->lines[b->length - i - 1]))
 			break;
 		tail++;
+	}
+	if (a->length == b->length && head == a->length) { /* no difference */
+		difference = 0;
+	} else { /* files differ */
+		difference = 1;
 	}
 
 	diff_file_t da = { .lines = &a->lines[head], .length = a->length - head - tail, };
@@ -290,9 +272,8 @@ int main(int argc, char **argv) {
 	
 	diff_file_free(a);
 	diff_file_free(b);
-
 	diff_free(d);
-	return r;
+	return r ? r : difference;
 }
 
 #endif
